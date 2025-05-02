@@ -46,11 +46,16 @@ func main() {
 		logger.Fatalf("Failed to ping database: %v", err)
 	}
 
+	// Run migrations
+	if err := runMigrations(db, logger); err != nil {
+		logger.Fatalf("Failed to run migrations: %v", err)
+	}
+
 	// Initialize layers
 	repo := repository.NewRepository(db)
 	svc := service.NewService(repo, logger)
 	h := handler.NewHandler(svc)
-	cbrClient := cbr.NewCBRClient(cfg)
+	cbrClient := cbr.NewCBRClient(cfg, logger)
 
 	// Setup router
 	r := mux.NewRouter()
@@ -65,6 +70,7 @@ func main() {
 	r.HandleFunc("/key-rate", func(w http.ResponseWriter, r *http.Request) {
 		rate, err := cbrClient.GetKeyRate()
 		if err != nil {
+			logger.Errorf("Failed to get key rate: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to get key rate: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -83,4 +89,113 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Fatalf("Server failed: %v", err)
 	}
+}
+
+func runMigrations(db *sql.DB, logger *logrus.Logger) error {
+	logger.Debug("Creating schema bank")
+	_, err := db.Exec("CREATE SCHEMA IF NOT EXISTS bank")
+	if err != nil {
+		return fmt.Errorf("failed to create schema bank: %w", err)
+	}
+
+	logger.Debug("Enabling pgcrypto extension")
+	_, err = db.Exec("CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA bank")
+	if err != nil {
+		return fmt.Errorf("failed to enable pgcrypto extension: %w", err)
+	}
+
+	logger.Debug("Creating table bank.users")
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS bank.users (
+			id BIGSERIAL PRIMARY KEY,
+			username VARCHAR(50) UNIQUE NOT NULL,
+			email VARCHAR(255) UNIQUE NOT NULL,
+			password_hash TEXT NOT NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		)`)
+	if err != nil {
+		return fmt.Errorf("failed to create bank.users table: %w", err)
+	}
+
+	logger.Debug("Creating table bank.accounts")
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS bank.accounts (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT REFERENCES bank.users(id) ON DELETE CASCADE,
+			balance NUMERIC(15, 2) DEFAULT 0.0,
+			currency VARCHAR(3) DEFAULT 'RUB',
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		)`)
+	if err != nil {
+		return fmt.Errorf("failed to create bank.accounts table: %w", err)
+	}
+
+	logger.Debug("Creating table bank.cards")
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS bank.cards (
+			id BIGSERIAL PRIMARY KEY,
+			account_id BIGINT REFERENCES bank.accounts(id) ON DELETE CASCADE,
+			card_number TEXT NOT NULL,
+			expiry_date TEXT NOT NULL,
+			cvv_hash TEXT NOT NULL,
+			hmac TEXT NOT NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		)`)
+	if err != nil {
+		return fmt.Errorf("failed to create bank.cards table: %w", err)
+	}
+
+	logger.Debug("Creating table bank.transactions")
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS bank.transactions (
+			id BIGSERIAL PRIMARY KEY,
+			account_id BIGINT REFERENCES bank.accounts(id) ON DELETE CASCADE,
+			amount NUMERIC(15, 2) NOT NULL,
+			type VARCHAR(50) NOT NULL,
+			description TEXT,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		)`)
+	if err != nil {
+		return fmt.Errorf("failed to create bank.transactions table: %w", err)
+	}
+
+	logger.Debug("Creating table bank.credits")
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS bank.credits (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT REFERENCES bank.users(id) ON DELETE CASCADE,
+			account_id BIGINT REFERENCES bank.accounts(id) ON DELETE CASCADE,
+			amount NUMERIC(15, 2) NOT NULL,
+			interest_rate NUMERIC(5, 2) NOT NULL,
+			term_months INTEGER NOT NULL,
+			hmac TEXT NOT NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		)`)
+	if err != nil {
+		return fmt.Errorf("failed to create bank.credits table: %w", err)
+	}
+
+	logger.Debug("Creating table bank.payment_schedules")
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS bank.payment_schedules (
+			id BIGSERIAL PRIMARY KEY,
+			credit_id BIGINT REFERENCES bank.credits(id) ON DELETE CASCADE,
+			payment_date DATE NOT NULL,
+			amount NUMERIC(15, 2) NOT NULL,
+			paid BOOLEAN DEFAULT FALSE,
+			penalty NUMERIC(15, 2) DEFAULT 0.0,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		)`)
+	if err != nil {
+		return fmt.Errorf("failed to create bank.payment_schedules table: %w", err)
+	}
+
+	logger.Info("Database migrations completed successfully")
+	return nil
 }

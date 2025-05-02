@@ -9,21 +9,24 @@ import (
 
 	"github.com/Dan9191/bank-service/internal/config"
 	"github.com/beevik/etree"
+	"github.com/sirupsen/logrus"
 )
 
 // CBRClient handles integration with Central Bank of Russia
 type CBRClient struct {
 	url    string
 	client *http.Client
+	log    *logrus.Logger
 }
 
 // NewCBRClient initializes a new CBR client
-func NewCBRClient(cfg *config.Config) *CBRClient {
+func NewCBRClient(cfg *config.Config, log *logrus.Logger) *CBRClient {
 	return &CBRClient{
 		url: cfg.CBRURL,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		log: log,
 	}
 }
 
@@ -67,6 +70,9 @@ func (c *CBRClient) sendRequest(soapRequest string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to read response: %v", err)
 	}
 
+	// Log the raw XML response for debugging
+	c.log.Debugf("CBR XML response: %s", string(body))
+
 	return body, nil
 }
 
@@ -77,15 +83,17 @@ func (c *CBRClient) parseXMLResponse(rawBody []byte) (float64, error) {
 		return 0, fmt.Errorf("failed to parse XML: %v", err)
 	}
 
-	krElements := doc.FindElements("//diffgram/KeyRateXML/KR")
+	// Use XPath from test main.go
+	krElements := doc.FindElements("//diffgram/KeyRate/KR")
 	if len(krElements) == 0 {
-		return 0, fmt.Errorf("no key rate data found")
+		return 0, fmt.Errorf("no key rate data found in XML")
 	}
 
+	// Get the latest key rate (first element)
 	latestKR := krElements[0]
 	rateElement := latestKR.FindElement("./Rate")
 	if rateElement == nil {
-		return 0, fmt.Errorf("rate element not found")
+		return 0, fmt.Errorf("rate element not found in XML")
 	}
 
 	var rate float64
@@ -113,5 +121,6 @@ func (c *CBRClient) GetKeyRate() (float64, error) {
 	const bankMargin = 5.0
 	rate += bankMargin
 
+	c.log.Infof("Retrieved key rate: %.2f%% (including %.2f%% bank margin)", rate, bankMargin)
 	return rate, nil
 }
