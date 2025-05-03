@@ -4,28 +4,139 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
 	"github.com/Dan9191/bank-service/internal/config"
+	"github.com/Dan9191/bank-service/internal/integrations/cbr"
 	"github.com/Dan9191/bank-service/internal/models"
 	"github.com/Dan9191/bank-service/internal/repository"
 	"github.com/Dan9191/bank-service/internal/utils"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // Service handles business logic
 type Service struct {
-	repo   *repository.Repository
-	log    *logrus.Logger
-	config *config.Config
+	repo      *repository.Repository
+	log       *logrus.Logger
+	config    *config.Config
+	cbrClient *cbr.CBRClient
+	cron      *cron.Cron
 }
 
 // NewService initializes a new service
-func NewService(repo *repository.Repository, log *logrus.Logger, cfg *config.Config) *Service {
-	return &Service{repo: repo, log: log, config: cfg}
+func NewService(repo *repository.Repository, log *logrus.Logger, cfg *config.Config, cbrClient *cbr.CBRClient) *Service {
+	svc := &Service{
+		repo:      repo,
+		log:       log,
+		config:    cfg,
+		cbrClient: cbrClient,
+		cron:      cron.New(),
+	}
+	svc.startScheduler()
+	return svc
+}
+
+// startScheduler starts the cron job for processing payments
+func (s *Service) startScheduler() {
+	_, err := s.cron.AddFunc("@every 24h", s.processPendingPayments)
+	if err != nil {
+		s.log.Fatalf("Failed to start payment scheduler: %v", err)
+	}
+	s.cron.Start()
+	s.log.Info("Payment scheduler started")
+}
+
+// calculateAnnuityPayment calculates the monthly annuity payment
+func (s *Service) calculateAnnuityPayment(principal, annualRate float64, termMonths int) float64 {
+	monthlyRate := annualRate / 100 / 12
+	term := float64(termMonths)
+	// Annuity formula: P = (r * PV) / (1 - (1 + r)^(-n))
+	payment := (monthlyRate * principal) / (1 - math.Pow(1+monthlyRate, -term))
+	return math.Round(payment*100) / 100 // Round to 2 decimal places
+}
+
+// generatePaymentSchedule generates the payment schedule for a credit
+func (s *Service) generatePaymentSchedule(credit *models.Credit) ([]*models.PaymentSchedule, error) {
+	payments := []*models.PaymentSchedule{}
+	monthlyPayment := s.calculateAnnuityPayment(credit.Amount, credit.InterestRate, credit.TermMonths)
+
+	for i := 0; i < credit.TermMonths; i++ {
+		payment := &models.PaymentSchedule{
+			CreditID:    credit.ID,
+			PaymentDate: time.Now().AddDate(0, i+1, 0).Truncate(24 * time.Hour),
+			Amount:      monthlyPayment,
+			Paid:        false,
+			Penalty:     0,
+		}
+		payments = append(payments, payment)
+	}
+
+	return payments, nil
+}
+
+// processPendingPayments processes all pending payments
+func (s *Service) processPendingPayments() {
+	ctx := context.Background()
+	payments, err := s.repo.GetPendingPayments()
+	if err != nil {
+		s.log.Errorf("Failed to get pending payments: %v", err)
+		return
+	}
+
+	for _, payment := range payments {
+		s.log.Debugf("Processing payment ID %d for credit %d, amount %.2f, due %s", payment.ID, payment.CreditID, payment.Amount, payment.PaymentDate.Format("2006-01-02"))
+
+		// Get credit to find account_id
+		credit, err := s.repo.FindCreditByID(payment.CreditID)
+		if err != nil {
+			s.log.Errorf("Failed to find credit %d for payment %d: %v", payment.CreditID, payment.ID, err)
+			continue
+		}
+
+		// Check account balance
+		balance, err := s.repo.GetAccountBalance(credit.AccountID)
+		if err != nil {
+			s.log.Errorf("Failed to get balance for account %d: %v", credit.AccountID, err)
+			continue
+		}
+
+		totalAmount := payment.Amount + payment.Penalty
+		if balance >= totalAmount {
+			// Process payment
+			tx := &models.Transaction{
+				AccountID:   credit.AccountID,
+				Amount:      -totalAmount,
+				Type:        "credit_payment",
+				Description: fmt.Sprintf("Credit payment for credit %d, payment %d", payment.CreditID, payment.ID),
+			}
+			if err := s.repo.Withdraw(ctx, tx); err != nil {
+				s.log.Errorf("Failed to withdraw payment %d for credit %d: %v", payment.ID, payment.CreditID, err)
+				continue
+			}
+
+			// Update payment status
+			payment.Paid = true
+			if err := s.repo.UpdatePaymentSchedule(payment); err != nil {
+				s.log.Errorf("Failed to update payment %d status: %v", payment.ID, err)
+				continue
+			}
+			s.log.Infof("Payment %d for credit %d processed successfully, amount %.2f", payment.ID, payment.CreditID, totalAmount)
+		} else {
+			// Apply penalty (10% of payment amount)
+			penalty := payment.Amount * 0.10
+			payment.Penalty += penalty
+			if err := s.repo.UpdatePaymentSchedule(payment); err != nil {
+				s.log.Errorf("Failed to apply penalty for payment %d: %v", payment.ID, err)
+				continue
+			}
+			s.log.Warnf("Payment %d for credit %d overdue, penalty %.2f applied", payment.ID, payment.CreditID, penalty)
+		}
+	}
 }
 
 // Register creates a new user with hashed password
@@ -177,6 +288,108 @@ func (s *Service) CreateCard(ctx context.Context, accountID int64) (*models.Card
 	card.ExpiryDate = expiryDate
 	s.log.Infof("Card created for account %d", accountID)
 	return card, nil
+}
+
+// CreateCredit creates a new credit with payment schedule
+func (s *Service) CreateCredit(ctx context.Context, accountID int64, amount float64, termMonths int) (*models.Credit, error) {
+	userIDStr, ok := ctx.Value("userID").(string)
+	if !ok || userIDStr == "" {
+		return nil, fmt.Errorf("user ID not found in context")
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Verify account belongs to user
+	accountUserID, err := s.repo.FindAccountByID(accountID)
+	if err != nil {
+		return nil, err
+	}
+	if accountUserID != userID {
+		return nil, fmt.Errorf("account does not belong to user")
+	}
+
+	// Validate input
+	if amount <= 0 {
+		return nil, fmt.Errorf("credit amount must be positive")
+	}
+	if termMonths <= 0 || termMonths > 360 {
+		return nil, fmt.Errorf("term must be between 1 and 360 months")
+	}
+
+	// Get interest rate from CBR
+	interestRate, err := s.cbrClient.GetKeyRate()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get interest rate: %w", err)
+	}
+
+	// Generate HMAC for credit
+	hmac := utils.GenerateHMAC(
+		fmt.Sprintf("%d", userID),
+		fmt.Sprintf("%d", accountID),
+		fmt.Sprintf("%.2f", amount),
+		s.config.HMACSecret,
+	)
+
+	credit := &models.Credit{
+		UserID:       userID,
+		AccountID:    accountID,
+		Amount:       amount,
+		InterestRate: interestRate,
+		TermMonths:   termMonths,
+		HMAC:         hmac,
+	}
+
+	// Create credit
+	if err := s.repo.CreateCredit(credit); err != nil {
+		return nil, err
+	}
+
+	// Generate and save payment schedule
+	payments, err := s.generatePaymentSchedule(credit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate payment schedule: %w", err)
+	}
+	for _, payment := range payments {
+		if err := s.repo.CreatePaymentSchedule(payment); err != nil {
+			return nil, fmt.Errorf("failed to save payment schedule: %w", err)
+		}
+	}
+
+	s.log.Infof("Credit created for account %d, amount %.2f, term %d months, rate %.2f%%", accountID, amount, termMonths, interestRate)
+	return credit, nil
+}
+
+// ListPaymentSchedules retrieves the payment schedule for a credit
+func (s *Service) ListPaymentSchedules(ctx context.Context, creditID int64) ([]*models.PaymentSchedule, error) {
+	userIDStr, ok := ctx.Value("userID").(string)
+	if !ok || userIDStr == "" {
+		return nil, fmt.Errorf("user ID not found in context")
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Verify credit belongs to user
+	credit, err := s.repo.FindCreditByID(creditID)
+	if err != nil {
+		return nil, fmt.Errorf("credit not found: %w", err)
+	}
+	if credit.UserID != userID {
+		return nil, fmt.Errorf("credit does not belong to user")
+	}
+
+	payments, err := s.repo.ListPaymentSchedules(creditID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.log.Infof("Retrieved %d payment schedules for credit %d", len(payments), creditID)
+	return payments, nil
 }
 
 // Deposit adds funds to an account

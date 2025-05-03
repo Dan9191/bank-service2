@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/golang-jwt/jwt/v5"
 	"net/http"
 	"os"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/Dan9191/bank-service/internal/middleware"
 	"github.com/Dan9191/bank-service/internal/repository"
 	"github.com/Dan9191/bank-service/internal/service"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
 	"github.com/sirupsen/logrus"
@@ -54,9 +54,9 @@ func main() {
 
 	// Initialize layers
 	repo := repository.NewRepository(db)
-	svc := service.NewService(repo, logger, cfg)
-	h := handler.NewHandler(svc)
 	cbrClient := cbr.NewCBRClient(cfg, logger)
+	svc := service.NewService(repo, logger, cfg, cbrClient)
+	h := handler.NewHandler(svc)
 
 	// Setup router
 	r := mux.NewRouter()
@@ -91,6 +91,8 @@ func main() {
 	authRouter.Use(middleware.AuthMiddleware(cfg))
 	authRouter.HandleFunc("/accounts", h.CreateAccount).Methods("POST")
 	authRouter.HandleFunc("/cards", h.CreateCard).Methods("POST")
+	authRouter.HandleFunc("/credits", h.CreateCredit).Methods("POST")
+	authRouter.HandleFunc("/credits/{id}/payments", h.ListPaymentSchedules).Methods("GET")
 	authRouter.HandleFunc("/cards", h.ListCards).Methods("GET")
 	authRouter.HandleFunc("/transactions/deposit", h.Deposit).Methods("POST")
 	authRouter.HandleFunc("/transactions/withdraw", h.Withdraw).Methods("POST")

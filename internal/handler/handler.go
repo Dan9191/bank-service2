@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/Dan9191/bank-service/internal/service"
+	"github.com/gorilla/mux"
 )
 
 // Handler manages HTTP requests
@@ -102,6 +103,51 @@ func (h *Handler) CreateCard(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(card)
+}
+
+// CreateCredit handles credit creation
+func (h *Handler) CreateCredit(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AccountID  int64   `json:"account_id"`
+		Amount     float64 `json:"amount"`
+		TermMonths int     `json:"term_months"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	credit, err := h.svc.CreateCredit(r.Context(), req.AccountID, req.Amount, req.TermMonths)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(credit)
+}
+
+// ListPaymentSchedules handles retrieving payment schedules for a credit
+func (h *Handler) ListPaymentSchedules(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	creditIDStr := vars["id"]
+	creditID, err := strconv.ParseInt(creditIDStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid credit ID", http.StatusBadRequest)
+		return
+	}
+
+	payments, err := h.svc.ListPaymentSchedules(r.Context(), creditID)
+	if err != nil {
+		if err.Error() == "credit not found" {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+		return
+	}
+
+	json.NewEncoder(w).Encode(payments)
 }
 
 // Deposit handles depositing funds to an account
