@@ -62,3 +62,45 @@ func (r *Repository) CreateAccount(account *models.Account) error {
 	}
 	return nil
 }
+
+// FindAccountByID retrieves the user_id for an account by its ID
+func (r *Repository) FindAccountByID(accountID int64) (int64, error) {
+	var userID int64
+	query := `SELECT user_id FROM bank.accounts WHERE id = $1`
+	err := r.db.QueryRow(query, accountID).Scan(&userID)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("account not found")
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to find account: %w", err)
+	}
+	return userID, nil
+}
+
+// CreateCard creates a new card in the database
+func (r *Repository) CreateCard(card *models.Card) error {
+	query := `
+		INSERT INTO bank.cards (
+			account_id,
+			card_number,
+			expiry_date,
+			cvv_hash,
+			hmac,
+			created_at,
+			updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		RETURNING id, created_at, updated_at`
+	err := r.db.QueryRow(
+		query,
+		card.AccountID,
+		card.CardNumber,
+		card.ExpiryDate,
+		card.CVV,
+		card.HMAC,
+	).Scan(&card.ID, &card.CreatedAt, &card.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to create card: %w", err)
+	}
+	return nil
+}

@@ -82,3 +82,23 @@ func (h *Handler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(account)
 }
+
+// CreateCard handles card creation
+func (h *Handler) CreateCard(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AccountID int64 `json:"account_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	card, err := h.svc.CreateCard(r.Context(), req.AccountID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(card)
+}

@@ -90,6 +90,7 @@ func main() {
 	authRouter := r.PathPrefix("/").Subrouter()
 	authRouter.Use(middleware.AuthMiddleware(cfg))
 	authRouter.HandleFunc("/accounts", h.CreateAccount).Methods("POST")
+	authRouter.HandleFunc("/cards", h.CreateCard).Methods("POST")
 
 	// Start server
 	addr := fmt.Sprintf(":%s", cfg.Port)
@@ -110,12 +111,6 @@ func runMigrations(db *sql.DB, logger *logrus.Logger) error {
 	_, err := db.Exec("CREATE SCHEMA IF NOT EXISTS bank")
 	if err != nil {
 		return fmt.Errorf("failed to create schema bank: %w", err)
-	}
-
-	logger.Debug("Enabling pgcrypto extension")
-	_, err = db.Exec("CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA bank")
-	if err != nil {
-		return fmt.Errorf("failed to enable pgcrypto extension: %w", err)
 	}
 
 	logger.Debug("Creating table bank.users")
