@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/golang-jwt/jwt/v5"
 	"net/http"
 	"os"
 	"time"
@@ -53,7 +54,7 @@ func main() {
 
 	// Initialize layers
 	repo := repository.NewRepository(db)
-	svc := service.NewService(repo, logger)
+	svc := service.NewService(repo, logger, cfg)
 	h := handler.NewHandler(svc)
 	cbrClient := cbr.NewCBRClient(cfg, logger)
 
@@ -62,10 +63,19 @@ func main() {
 	// Public routes
 	r.HandleFunc("/register", h.Register).Methods("POST")
 	r.HandleFunc("/login", h.Login).Methods("POST")
-	// Protected routes
-	authRouter := r.PathPrefix("/").Subrouter()
-	authRouter.Use(middleware.AuthMiddleware(cfg))
-	authRouter.HandleFunc("/accounts", h.CreateAccount).Methods("POST")
+	// Test token endpoint
+	r.HandleFunc("/test-token", func(w http.ResponseWriter, r *http.Request) {
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+			Subject:   "1",
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+		})
+		tokenString, err := token.SignedString([]byte(cfg.JWTSecret))
+		if err != nil {
+			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
+	}).Methods("GET")
 	// CBR key rate endpoint
 	r.HandleFunc("/key-rate", func(w http.ResponseWriter, r *http.Request) {
 		rate, err := cbrClient.GetKeyRate()
@@ -76,6 +86,10 @@ func main() {
 		}
 		json.NewEncoder(w).Encode(map[string]float64{"key_rate": rate})
 	}).Methods("GET")
+	// Protected routes
+	authRouter := r.PathPrefix("/").Subrouter()
+	authRouter.Use(middleware.AuthMiddleware(cfg))
+	authRouter.HandleFunc("/accounts", h.CreateAccount).Methods("POST")
 
 	// Start server
 	addr := fmt.Sprintf(":%s", cfg.Port)

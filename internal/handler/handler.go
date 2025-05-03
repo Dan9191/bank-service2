@@ -1,30 +1,84 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/Dan9191/bank-service/internal/service"
 )
 
+// Handler manages HTTP requests
 type Handler struct {
 	svc *service.Service
 }
 
+// NewHandler initializes a new handler
 func NewHandler(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
 // Register handles user registration
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "Not implemented", http.StatusNotImplemented)
+	var req struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.svc.Register(req.Username, req.Email, req.Password)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(user)
 }
 
 // Login handles user authentication
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "Not implemented", http.StatusNotImplemented)
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	token, err := h.svc.Login(req.Email, req.Password)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"token": token})
 }
 
 // CreateAccount handles account creation
 func (h *Handler) CreateAccount(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "Not implemented", http.StatusNotImplemented)
+	var req struct {
+		Currency string `json:"currency"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Currency == "" {
+		req.Currency = "RUB"
+	}
+
+	account, err := h.svc.CreateAccount(r.Context(), req.Currency)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(account)
 }
