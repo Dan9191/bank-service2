@@ -139,6 +139,144 @@ func (s *Service) processPendingPayments() {
 	}
 }
 
+// GetIncomeExpenseStats retrieves income and expense statistics for the user
+func (s *Service) GetIncomeExpenseStats(ctx context.Context, year, month int) (*models.IncomeExpenseStats, error) {
+	userIDStr, ok := ctx.Value("userID").(string)
+	if !ok || userIDStr == "" {
+		return nil, fmt.Errorf("user ID not found in context")
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Calculate start and end dates for the specified month
+	startDate := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	endDate := startDate.AddDate(0, 1, 0).Add(-time.Second)
+
+	income, expense, err := s.repo.GetIncomeExpenseStats(userID, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+
+	stats := &models.IncomeExpenseStats{
+		Income:     income,
+		Expense:    expense,
+		NetBalance: income - expense,
+	}
+
+	s.log.Infof("Retrieved income/expense stats for user %d: income %.2f, expense %.2f", userID, income, expense)
+	return stats, nil
+}
+
+// GetCreditBurden retrieves credit burden analytics for the user
+func (s *Service) GetCreditBurden(ctx context.Context) (*models.CreditBurden, error) {
+	userIDStr, ok := ctx.Value("userID").(string)
+	if !ok || userIDStr == "" {
+		return nil, fmt.Errorf("user ID not found in context")
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Get upcoming payments for the next 30 days
+	endDate := time.Now().AddDate(0, 0, 30)
+	payments, err := s.repo.GetUpcomingPayments(userID, endDate)
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate total monthly payments
+	monthlyPayments := 0.0
+	for _, payment := range payments {
+		monthlyPayments += payment.Amount + payment.Penalty
+	}
+
+	// Get total balance
+	totalBalance, err := s.repo.GetTotalBalance(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate burden ratio
+	burdenRatio := 0.0
+	if totalBalance > 0 {
+		burdenRatio = monthlyPayments / totalBalance
+	}
+
+	burden := &models.CreditBurden{
+		MonthlyPayments: monthlyPayments,
+		TotalBalance:    totalBalance,
+		BurdenRatio:     burdenRatio,
+	}
+
+	s.log.Infof("Retrieved credit burden for user %d: monthly payments %.2f, total balance %.2f, ratio %.2f", userID, monthlyPayments, totalBalance, burdenRatio)
+	return burden, nil
+}
+
+// ForecastBalance forecasts the balance for N days
+func (s *Service) ForecastBalance(ctx context.Context, days int) (*models.BalanceForecast, error) {
+	userIDStr, ok := ctx.Value("userID").(string)
+	if !ok || userIDStr == "" {
+		return nil, fmt.Errorf("user ID not found in context")
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Validate days
+	if days <= 0 || days > 365 {
+		return nil, fmt.Errorf("forecast days must be between 1 and 365")
+	}
+
+	// Get total balance
+	totalBalance, err := s.repo.GetTotalBalance(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get upcoming payments
+	endDate := time.Now().AddDate(0, 0, days)
+	payments, err := s.repo.GetUpcomingPayments(userID, endDate)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize forecast
+	forecast := &models.BalanceForecast{
+		InitialBalance: totalBalance,
+		ForecastedDays: days,
+		DailyForecast:  make([]models.DailyBalance, days),
+	}
+	currentBalance := totalBalance
+
+	// Process each day
+	for i := 0; i < days; i++ {
+		day := time.Now().AddDate(0, 0, i).Truncate(24 * time.Hour)
+		dayStr := day.Format("2006-01-02")
+
+		// Subtract payments for the day
+		for _, payment := range payments {
+			if payment.PaymentDate.Truncate(24 * time.Hour).Equal(day) {
+				currentBalance -= (payment.Amount + payment.Penalty)
+			}
+		}
+
+		forecast.DailyForecast[i] = models.DailyBalance{
+			Date:    dayStr,
+			Balance: math.Round(currentBalance*100) / 100,
+		}
+	}
+
+	s.log.Infof("Generated balance forecast for user %d for %d days", userID, days)
+	return forecast, nil
+}
+
 // Register creates a new user with hashed password
 func (s *Service) Register(username, email, password string) (*models.User, error) {
 	// Hash password

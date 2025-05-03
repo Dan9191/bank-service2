@@ -489,3 +489,76 @@ func (r *Repository) UpdatePaymentSchedule(payment *models.PaymentSchedule) erro
 	}
 	return nil
 }
+
+// GetIncomeExpenseStats retrieves income and expense statistics for a user
+func (r *Repository) GetIncomeExpenseStats(userID int64, startDate, endDate time.Time) (income, expense float64, err error) {
+	query := `
+		SELECT
+			COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) as income,
+			COALESCE(SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END), 0) as expense
+		FROM bank.transactions t
+		JOIN bank.accounts a ON t.account_id = a.id
+		WHERE a.user_id = $1
+		AND t.created_at BETWEEN $2 AND $3
+		AND t.type IN ('deposit', 'transfer_in', 'withdrawal', 'transfer_out', 'credit_payment')`
+	err = r.db.QueryRow(query, userID, startDate, endDate).Scan(&income, &expense)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to get income/expense stats: %w", err)
+	}
+	return income, expense, nil
+}
+
+// GetTotalBalance retrieves the total balance across all user accounts
+func (r *Repository) GetTotalBalance(userID int64) (float64, error) {
+	var totalBalance float64
+	query := `
+		SELECT COALESCE(SUM(balance), 0)
+		FROM bank.accounts
+		WHERE user_id = $1`
+	err := r.db.QueryRow(query, userID).Scan(&totalBalance)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get total balance: %w", err)
+	}
+	return totalBalance, nil
+}
+
+// GetUpcomingPayments retrieves unpaid payments up to a specific date
+func (r *Repository) GetUpcomingPayments(userID int64, endDate time.Time) ([]*models.PaymentSchedule, error) {
+	query := `
+		SELECT ps.id, ps.credit_id, ps.payment_date, ps.amount, ps.paid, ps.penalty, ps.created_at, ps.updated_at
+		FROM bank.payment_schedules ps
+		JOIN bank.credits c ON ps.credit_id = c.id
+		WHERE c.user_id = $1
+		AND ps.paid = FALSE
+		AND ps.payment_date <= $2
+		ORDER BY ps.payment_date ASC`
+	rows, err := r.db.Query(query, userID, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get upcoming payments: %w", err)
+	}
+	defer rows.Close()
+
+	var payments []*models.PaymentSchedule
+	for rows.Next() {
+		payment := &models.PaymentSchedule{}
+		err := rows.Scan(
+			&payment.ID,
+			&payment.CreditID,
+			&payment.PaymentDate,
+			&payment.Amount,
+			&payment.Paid,
+			&payment.Penalty,
+			&payment.CreatedAt,
+			&payment.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan payment schedule: %w", err)
+		}
+		payments = append(payments, payment)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating payment schedules: %w", err)
+	}
+	return payments, nil
+}

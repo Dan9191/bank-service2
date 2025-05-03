@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/Dan9191/bank-service/internal/service"
 	"github.com/gorilla/mux"
@@ -148,6 +149,58 @@ func (h *Handler) ListPaymentSchedules(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(payments)
+}
+
+// GetIncomeExpenseStats handles retrieving income and expense statistics
+func (h *Handler) GetIncomeExpenseStats(w http.ResponseWriter, r *http.Request) {
+	yearStr := r.URL.Query().Get("year")
+	monthStr := r.URL.Query().Get("month")
+
+	// Default to current month if not specified
+	year, err := strconv.Atoi(yearStr)
+	if err != nil || year < 2000 || year > 2100 {
+		year = time.Now().Year()
+	}
+	month, err := strconv.Atoi(monthStr)
+	if err != nil || month < 1 || month > 12 {
+		month = int(time.Now().Month())
+	}
+
+	stats, err := h.svc.GetIncomeExpenseStats(r.Context(), year, month)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	json.NewEncoder(w).Encode(stats)
+}
+
+// GetCreditBurden handles retrieving credit burden analytics
+func (h *Handler) GetCreditBurden(w http.ResponseWriter, r *http.Request) {
+	burden, err := h.svc.GetCreditBurden(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	json.NewEncoder(w).Encode(burden)
+}
+
+// ForecastBalance handles balance forecasting
+func (h *Handler) ForecastBalance(w http.ResponseWriter, r *http.Request) {
+	daysStr := r.URL.Query().Get("days")
+	days, err := strconv.Atoi(daysStr)
+	if err != nil || days <= 0 {
+		days = 30 // Default to 30 days
+	}
+
+	forecast, err := h.svc.ForecastBalance(r.Context(), days)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	json.NewEncoder(w).Encode(forecast)
 }
 
 // Deposit handles depositing funds to an account
