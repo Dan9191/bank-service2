@@ -262,3 +262,52 @@ func (r *Repository) ListTransactions(accountID int64, transactionType string, l
 
 	return transactions, nil
 }
+
+// ListCards retrieves a list of cards for a user or specific account
+func (r *Repository) ListCards(userID, accountID int64, limit, offset int) ([]*models.Card, error) {
+	query := `
+		SELECT c.id, c.account_id, c.card_number, c.expiry_date, c.cvv_hash, c.hmac, c.created_at, c.updated_at
+		FROM bank.cards c
+		JOIN bank.accounts a ON c.account_id = a.id
+		WHERE a.user_id = $1`
+	args := []interface{}{userID}
+
+	if accountID != 0 {
+		query += ` AND c.account_id = $2`
+		args = append(args, accountID)
+	}
+
+	query += ` ORDER BY c.created_at DESC LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
+	args = append(args, limit, offset)
+
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list cards: %w", err)
+	}
+	defer rows.Close()
+
+	var cards []*models.Card
+	for rows.Next() {
+		card := &models.Card{}
+		err := rows.Scan(
+			&card.ID,
+			&card.AccountID,
+			&card.CardNumber,
+			&card.ExpiryDate,
+			&card.CVV,
+			&card.HMAC,
+			&card.CreatedAt,
+			&card.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan card: %w", err)
+		}
+		cards = append(cards, card)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating cards: %w", err)
+	}
+
+	return cards, nil
+}

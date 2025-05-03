@@ -91,6 +91,7 @@ func main() {
 	authRouter.Use(middleware.AuthMiddleware(cfg))
 	authRouter.HandleFunc("/accounts", h.CreateAccount).Methods("POST")
 	authRouter.HandleFunc("/cards", h.CreateCard).Methods("POST")
+	authRouter.HandleFunc("/cards", h.ListCards).Methods("GET")
 	authRouter.HandleFunc("/transactions/deposit", h.Deposit).Methods("POST")
 	authRouter.HandleFunc("/transactions/withdraw", h.Withdraw).Methods("POST")
 	authRouter.HandleFunc("/transactions/transfer", h.Transfer).Methods("POST")

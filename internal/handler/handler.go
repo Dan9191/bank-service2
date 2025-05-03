@@ -199,3 +199,38 @@ func (h *Handler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(transactions)
 }
+
+// ListCards handles retrieving cards for a user or account
+func (h *Handler) ListCards(w http.ResponseWriter, r *http.Request) {
+	accountIDStr := r.URL.Query().Get("account_id")
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+
+	var accountID int64
+	var err error
+	if accountIDStr != "" {
+		accountID, err = strconv.ParseInt(accountIDStr, 10, 64)
+		if err != nil {
+			http.Error(w, "Invalid account_id", http.StatusBadRequest)
+			return
+		}
+	}
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 10 // Default limit
+	}
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil || offset < 0 {
+		offset = 0
+	}
+
+	cards, err := h.svc.ListCards(r.Context(), accountID, limit, offset)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	json.NewEncoder(w).Encode(cards)
+}

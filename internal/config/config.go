@@ -24,8 +24,8 @@ func NewConfig() (*Config, error) {
 		LogLevel:      getEnv("LOG_LEVEL", "INFO"),
 		JWTSecret:     getEnv("JWT_SECRET", "secret"),
 		CBRURL:        getEnv("CBR_URL", "https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx"),
-		HMACSecret:    getEnv("HMAC_SECRET", "secret"),
-		EncryptionKey: getEnv("ENCRYPTION_KEY", "secret"),
+		HMACSecret:    getEnv("HMAC_SECRET", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"),
+		EncryptionKey: getEnv("ENCRYPTION_KEY", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"),
 	}
 
 	if cfg.DBConn == "" {

@@ -8,112 +8,145 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// GenerateCardNumber generates a valid card number using Luhn algorithm
+// GenerateCardNumber generates a card number with the specified prefix and length
 func GenerateCardNumber(prefix string, length int) (string, error) {
-	if len(prefix) >= length || len(prefix) < 1 {
-		return "", fmt.Errorf("invalid prefix length for card number")
+	if length < len(prefix) || length > 19 {
+		return "", fmt.Errorf("invalid card number length")
 	}
 
-	// Fill with random digits
-	digits := make([]int, length)
-	for i := 0; i < len(prefix); i++ {
-		d, err := strconv.Atoi(string(prefix[i]))
-		if err != nil {
-			return "", fmt.Errorf("invalid prefix digit: %v", err)
-		}
-		digits[i] = d
-	}
-	for i := len(prefix); i < length-1; i++ {
-		var b [1]byte
-		_, err := rand.Read(b[:])
-		if err != nil {
-			return "", fmt.Errorf("failed to generate random digit: %v", err)
-		}
-		digits[i] = int(b[0] % 10)
+	// Generate random digits
+	digits := make([]byte, length-len(prefix))
+	_, err := rand.Read(digits)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate random digits: %w", err)
 	}
 
-	// Calculate check digit using Luhn algorithm
-	sum := 0
-	isEven := false
-	for i := length - 1; i >= 0; i-- {
-		d := digits[i]
-		if isEven {
-			d *= 2
-			if d > 9 {
-				d -= 9
-			}
-		}
-		sum += d
-		isEven = !isEven
+	// Convert to string and ensure valid digits
+	var builder strings.Builder
+	builder.WriteString(prefix)
+	for _, b := range digits {
+		digit := b%10 + '0' // Convert to ASCII digit
+		builder.WriteByte(digit)
 	}
-	checkDigit := (10 - (sum % 10)) % 10
-	digits[length-1] = checkDigit
 
-	// Convert to string
-	var sb strings.Builder
-	for _, d := range digits {
-		sb.WriteString(strconv.Itoa(d))
+	cardNumber := builder.String()
+
+	// Ensure length is exact
+	if len(cardNumber) != length {
+		return "", fmt.Errorf("generated card number has incorrect length")
 	}
-	return sb.String(), nil
+
+	return cardNumber, nil
 }
 
-// GenerateExpiryDate generates an expiry date (MM/YY)
+// GenerateExpiryDate generates a card expiry date (MM/YY)
 func GenerateExpiryDate() string {
 	now := time.Now()
-	year := now.Year() + 4 // Valid for 4 years
+	year := now.Year() + 3 // Cards valid for 3 years
 	month := now.Month()
 	return fmt.Sprintf("%02d/%02d", month, year%100)
 }
 
-// GenerateCVV generates a 3-digit CVV
+// GenerateCVV generates a 3-digit CVV code
 func GenerateCVV() string {
-	var b [2]byte
-	_, err := rand.Read(b[:])
-	if err != nil {
-		return "000" // Fallback in case of error
-	}
-	num := int(b[0])<<8 | int(b[1])
-	return fmt.Sprintf("%03d", num%1000)
+	b := make([]byte, 3)
+	rand.Read(b)
+	return fmt.Sprintf("%03d", (int(b[0])%10)*100+(int(b[1])%10)*10+int(b[2])%10)
 }
 
-// GenerateHMAC creates an HMAC for card data
+// GenerateHMAC generates an HMAC for card details
 func GenerateHMAC(cardNumber, expiryDate, cvv, secret string) string {
-	data := cardNumber + expiryDate + cvv
 	h := hmac.New(sha256.New, []byte(secret))
+	data := cardNumber + expiryDate + cvv
 	h.Write([]byte(data))
-	return fmt.Sprintf("%x", h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
-// Encrypt encrypts data using AES-GCM
-func Encrypt(plaintext, key string) (string, error) {
-	keyBytes, err := hex.DecodeString(key)
+func Encrypt(data string, key []byte) (string, error) {
+	// Проверка длины ключа
+	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
+		return "", fmt.Errorf("encryption key must be 16, 24, or 32 bytes, got %d", len(key))
+	}
+
+	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", fmt.Errorf("invalid key: %v", err)
-	}
-	if len(keyBytes) != 32 {
-		return "", fmt.Errorf("key must be 32 bytes")
+		return "", fmt.Errorf("failed to create cipher: %w", err)
 	}
 
-	block, err := aes.NewCipher(keyBytes)
+	// Генерация IV
+	iv := make([]byte, aes.BlockSize)
+	_, err = rand.Read(iv)
 	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %v", err)
+		return "", fmt.Errorf("failed to generate IV: %w", err)
 	}
 
-	gcm, err := cipher.NewGCM(block)
+	// Добавление отступов
+	dataBytes := []byte(data)
+	if len(dataBytes)%aes.BlockSize != 0 {
+		padding := aes.BlockSize - len(dataBytes)%aes.BlockSize
+		for i := 0; i < padding; i++ {
+			dataBytes = append(dataBytes, byte(padding))
+		}
+	}
+
+	// Шифрование
+	ciphertext := make([]byte, len(dataBytes))
+	mode := cipher.NewCBCEncrypter(block, iv)
+	mode.CryptBlocks(ciphertext, dataBytes)
+
+	// Комбинирование IV и шифрованного текста
+	final := append(iv, ciphertext...)
+	return hex.EncodeToString(final), nil
+}
+
+func Decrypt(encryptedData string, key []byte) (string, error) {
+	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
+		return "", fmt.Errorf("decryption key must be 16, 24, or 32 bytes, got %d", len(key))
+	}
+
+	// Декодирование hex
+	data, err := hex.DecodeString(encryptedData)
 	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %v", err)
+		return "", fmt.Errorf("failed to decode hex: %w", err)
 	}
 
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", fmt.Errorf("failed to generate nonce: %v", err)
+	if len(data) < aes.BlockSize {
+		return "", fmt.Errorf("invalid encrypted data length")
 	}
 
-	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return hex.EncodeToString(ciphertext), nil
+	// Извлечение IV и шифрованного текста
+	iv := data[:aes.BlockSize]
+	ciphertext := data[aes.BlockSize:]
+
+	// Создание шифра
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	// Расшифровка
+	if len(ciphertext)%aes.BlockSize != 0 {
+		return "", fmt.Errorf("invalid ciphertext length")
+	}
+
+	plaintext := make([]byte, len(ciphertext))
+	mode := cipher.NewCBCDecrypter(block, iv)
+	mode.CryptBlocks(plaintext, ciphertext)
+
+	// Удаление отступов
+	padding := int(plaintext[len(plaintext)-1])
+	if padding > aes.BlockSize || padding == 0 {
+		return "", fmt.Errorf("invalid padding")
+	}
+	for i := len(plaintext) - padding; i < len(plaintext); i++ {
+		if int(plaintext[i]) != padding {
+			return "", fmt.Errorf("invalid padding bytes")
+		}
+	}
+
+	return string(plaintext[:len(plaintext)-padding]), nil
 }

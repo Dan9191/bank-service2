@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"time"
@@ -130,12 +131,21 @@ func (s *Service) CreateCard(ctx context.Context, accountID int64) (*models.Card
 	expiryDate := utils.GenerateExpiryDate()
 	cvv := utils.GenerateCVV()
 
+	// Decode encryption key from hex
+	encryptionKey, err := hex.DecodeString(s.config.EncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode encryption key: %w", err)
+	}
+	if len(encryptionKey) != 32 {
+		return nil, fmt.Errorf("encryption key must be 32 bytes, got %d", len(encryptionKey))
+	}
+
 	// Encrypt card number and expiry date
-	encryptedCardNumber, err := utils.Encrypt(cardNumber, s.config.EncryptionKey)
+	encryptedCardNumber, err := utils.Encrypt(cardNumber, encryptionKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt card number: %w", err)
 	}
-	encryptedExpiryDate, err := utils.Encrypt(expiryDate, s.config.EncryptionKey)
+	encryptedExpiryDate, err := utils.Encrypt(expiryDate, encryptionKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt expiry date: %w", err)
 	}
@@ -359,4 +369,67 @@ func (s *Service) ListTransactions(ctx context.Context, accountID int64, transac
 
 	s.log.Infof("Retrieved %d transactions for account %d", len(transactions), accountID)
 	return transactions, nil
+}
+
+// ListCards retrieves a list of cards for a user or specific account
+func (s *Service) ListCards(ctx context.Context, accountID int64, limit, offset int) ([]*models.Card, error) {
+	userIDStr, ok := ctx.Value("userID").(string)
+	if !ok || userIDStr == "" {
+		return nil, fmt.Errorf("user ID not found in context")
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Validate pagination
+	if limit <= 0 {
+		limit = 10 // Default limit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	// If account_id is specified, verify it belongs to user
+	if accountID != 0 {
+		accountUserID, err := s.repo.FindAccountByID(accountID)
+		if err != nil {
+			return nil, err
+		}
+		if accountUserID != userID {
+			return nil, fmt.Errorf("account does not belong to user")
+		}
+	}
+
+	cards, err := s.repo.ListCards(userID, accountID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	// Decode encryption key from hex
+	encryptionKey, err := hex.DecodeString(s.config.EncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode encryption key: %w", err)
+	}
+	if len(encryptionKey) != 32 {
+		return nil, fmt.Errorf("encryption key must be 32 bytes, got %d", len(encryptionKey))
+	}
+
+	// Decrypt card_number and expiry_date
+	for _, card := range cards {
+		decryptedCardNumber, err := utils.Decrypt(card.CardNumber, encryptionKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt card number: %w", err)
+		}
+		decryptedExpiryDate, err := utils.Decrypt(card.ExpiryDate, encryptionKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt expiry date: %w", err)
+		}
+		card.CardNumber = decryptedCardNumber
+		card.ExpiryDate = decryptedExpiryDate
+	}
+
+	s.log.Infof("Retrieved %d cards for user %d", len(cards), userID)
+	return cards, nil
 }
