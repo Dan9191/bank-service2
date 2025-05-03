@@ -418,13 +418,16 @@ func (s *Service) ListCards(ctx context.Context, accountID int64, limit, offset 
 
 	// Decrypt card_number and expiry_date
 	for _, card := range cards {
+		s.log.Debugf("Decrypting card ID %d: card_number=%s, expiry_date=%s", card.ID, card.CardNumber, card.ExpiryDate)
 		decryptedCardNumber, err := utils.Decrypt(card.CardNumber, encryptionKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt card number: %w", err)
+			s.log.Errorf("Failed to decrypt card number for card ID %d: %v", card.ID, err)
+			return nil, fmt.Errorf("failed to decrypt card number for card ID %d: %w", card.ID, err)
 		}
 		decryptedExpiryDate, err := utils.Decrypt(card.ExpiryDate, encryptionKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt expiry date: %w", err)
+			s.log.Errorf("Failed to decrypt expiry date for card ID %d: %v", card.ID, err)
+			return nil, fmt.Errorf("failed to decrypt expiry date for card ID %d: %w", card.ID, err)
 		}
 		card.CardNumber = decryptedCardNumber
 		card.ExpiryDate = decryptedExpiryDate

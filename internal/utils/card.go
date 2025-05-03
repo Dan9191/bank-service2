@@ -15,7 +15,7 @@ import (
 // GenerateCardNumber generates a card number with the specified prefix and length
 func GenerateCardNumber(prefix string, length int) (string, error) {
 	if length < len(prefix) || length > 19 {
-		return "", fmt.Errorf("invalid card number length")
+		return "", fmt.Errorf("invalid card number length: %d", length)
 	}
 
 	// Generate random digits
@@ -37,7 +37,7 @@ func GenerateCardNumber(prefix string, length int) (string, error) {
 
 	// Ensure length is exact
 	if len(cardNumber) != length {
-		return "", fmt.Errorf("generated card number has incorrect length")
+		return "", fmt.Errorf("generated card number has incorrect length: got %d, want %d", len(cardNumber), length)
 	}
 
 	return cardNumber, nil
@@ -66,8 +66,11 @@ func GenerateHMAC(cardNumber, expiryDate, cvv, secret string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// Encrypt encrypts a string using AES with PKCS#5/PKCS#7 padding
 func Encrypt(data string, key []byte) (string, error) {
-	// Проверка длины ключа
+	if len(data) == 0 {
+		return "", fmt.Errorf("input data is empty")
+	}
 	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
 		return "", fmt.Errorf("encryption key must be 16, 24, or 32 bytes, got %d", len(key))
 	}
@@ -77,74 +80,79 @@ func Encrypt(data string, key []byte) (string, error) {
 		return "", fmt.Errorf("failed to create cipher: %w", err)
 	}
 
-	// Генерация IV
+	// Generate IV
 	iv := make([]byte, aes.BlockSize)
 	_, err = rand.Read(iv)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate IV: %w", err)
 	}
 
-	// Добавление отступов
+	// Add PKCS#5/PKCS#7 padding
 	dataBytes := []byte(data)
-	if len(dataBytes)%aes.BlockSize != 0 {
-		padding := aes.BlockSize - len(dataBytes)%aes.BlockSize
-		for i := 0; i < padding; i++ {
-			dataBytes = append(dataBytes, byte(padding))
-		}
+	padding := aes.BlockSize - len(dataBytes)%aes.BlockSize
+	for i := 0; i < padding; i++ {
+		dataBytes = append(dataBytes, byte(padding))
 	}
 
-	// Шифрование
+	// Encrypt
 	ciphertext := make([]byte, len(dataBytes))
 	mode := cipher.NewCBCEncrypter(block, iv)
 	mode.CryptBlocks(ciphertext, dataBytes)
 
-	// Комбинирование IV и шифрованного текста
+	// Combine IV and ciphertext
 	final := append(iv, ciphertext...)
 	return hex.EncodeToString(final), nil
 }
 
+// Decrypt decrypts a hex-encoded string using AES with PKCS#5/PKCS#7 padding
 func Decrypt(encryptedData string, key []byte) (string, error) {
+	if len(encryptedData) == 0 {
+		return "", fmt.Errorf("encrypted data is empty")
+	}
 	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
 		return "", fmt.Errorf("decryption key must be 16, 24, or 32 bytes, got %d", len(key))
 	}
 
-	// Декодирование hex
+	// Decode hex
 	data, err := hex.DecodeString(encryptedData)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode hex: %w", err)
 	}
 
 	if len(data) < aes.BlockSize {
-		return "", fmt.Errorf("invalid encrypted data length")
+		return "", fmt.Errorf("encrypted data too short: %d bytes", len(data))
 	}
 
-	// Извлечение IV и шифрованного текста
+	// Extract IV and ciphertext
 	iv := data[:aes.BlockSize]
 	ciphertext := data[aes.BlockSize:]
 
-	// Создание шифра
+	if len(ciphertext) == 0 {
+		return "", fmt.Errorf("ciphertext is empty")
+	}
+	if len(ciphertext)%aes.BlockSize != 0 {
+		return "", fmt.Errorf("invalid ciphertext length: %d bytes", len(ciphertext))
+	}
+
+	// Create cipher
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", fmt.Errorf("failed to create cipher: %w", err)
 	}
 
-	// Расшифровка
-	if len(ciphertext)%aes.BlockSize != 0 {
-		return "", fmt.Errorf("invalid ciphertext length")
-	}
-
+	// Decrypt
 	plaintext := make([]byte, len(ciphertext))
 	mode := cipher.NewCBCDecrypter(block, iv)
 	mode.CryptBlocks(plaintext, ciphertext)
 
-	// Удаление отступов
+	// Remove PKCS#5/PKCS#7 padding
 	padding := int(plaintext[len(plaintext)-1])
 	if padding > aes.BlockSize || padding == 0 {
-		return "", fmt.Errorf("invalid padding")
+		return "", fmt.Errorf("invalid padding value: %d", padding)
 	}
 	for i := len(plaintext) - padding; i < len(plaintext); i++ {
 		if int(plaintext[i]) != padding {
-			return "", fmt.Errorf("invalid padding bytes")
+			return "", fmt.Errorf("invalid padding bytes: expected %d, got %d at position %d", padding, plaintext[i], i)
 		}
 	}
 
