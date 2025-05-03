@@ -322,3 +322,41 @@ func (s *Service) Transfer(ctx context.Context, fromAccountID, toAccountID int64
 	s.log.Infof("Transfer of %f from account %d to account %d", amount, fromAccountID, toAccountID)
 	return []*models.Transaction{withdrawal, deposit}, nil
 }
+
+// ListTransactions retrieves a list of transactions for an account
+func (s *Service) ListTransactions(ctx context.Context, accountID int64, transactionType string, limit, offset int) ([]*models.Transaction, error) {
+	userIDStr, ok := ctx.Value("userID").(string)
+	if !ok || userIDStr == "" {
+		return nil, fmt.Errorf("user ID not found in context")
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Verify account belongs to user
+	accountUserID, err := s.repo.FindAccountByID(accountID)
+	if err != nil {
+		return nil, err
+	}
+	if accountUserID != userID {
+		return nil, fmt.Errorf("account does not belong to user")
+	}
+
+	// Validate pagination
+	if limit <= 0 {
+		limit = 10 // Default limit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	transactions, err := s.repo.ListTransactions(accountID, transactionType, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	s.log.Infof("Retrieved %d transactions for account %d", len(transactions), accountID)
+	return transactions, nil
+}

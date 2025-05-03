@@ -94,6 +94,7 @@ func main() {
 	authRouter.HandleFunc("/transactions/deposit", h.Deposit).Methods("POST")
 	authRouter.HandleFunc("/transactions/withdraw", h.Withdraw).Methods("POST")
 	authRouter.HandleFunc("/transactions/transfer", h.Transfer).Methods("POST")
+	authRouter.HandleFunc("/transactions", h.ListTransactions).Methods("GET")
 
 	// Start server
 	addr := fmt.Sprintf(":%s", cfg.Port)

@@ -215,3 +215,50 @@ func (r *Repository) Transfer(ctx context.Context, withdrawal, deposit *models.T
 	}
 	return nil
 }
+
+// ListTransactions retrieves a list of transactions for an account
+func (r *Repository) ListTransactions(accountID int64, transactionType string, limit, offset int) ([]*models.Transaction, error) {
+	query := `
+		SELECT id, account_id, amount, type, description, created_at, updated_at
+		FROM bank.transactions
+		WHERE account_id = $1`
+	args := []interface{}{accountID}
+
+	if transactionType != "" {
+		query += ` AND type = $2`
+		args = append(args, transactionType)
+	}
+
+	query += ` ORDER BY created_at DESC LIMIT $` + fmt.Sprintf("%d", len(args)+1) + ` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
+	args = append(args, limit, offset)
+
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list transactions: %w", err)
+	}
+	defer rows.Close()
+
+	var transactions []*models.Transaction
+	for rows.Next() {
+		tx := &models.Transaction{}
+		err := rows.Scan(
+			&tx.ID,
+			&tx.AccountID,
+			&tx.Amount,
+			&tx.Type,
+			&tx.Description,
+			&tx.CreatedAt,
+			&tx.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan transaction: %w", err)
+		}
+		transactions = append(transactions, tx)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating transactions: %w", err)
+	}
+
+	return transactions, nil
+}
