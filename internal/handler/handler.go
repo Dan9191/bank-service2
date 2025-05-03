@@ -102,3 +102,67 @@ func (h *Handler) CreateCard(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(card)
 }
+
+// Deposit handles depositing funds to an account
+func (h *Handler) Deposit(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AccountID int64   `json:"account_id"`
+		Amount    float64 `json:"amount"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	transaction, err := h.svc.Deposit(r.Context(), req.AccountID, req.Amount)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(transaction)
+}
+
+// Withdraw handles withdrawing funds from an account
+func (h *Handler) Withdraw(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AccountID int64   `json:"account_id"`
+		Amount    float64 `json:"amount"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	transaction, err := h.svc.Withdraw(r.Context(), req.AccountID, req.Amount)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(transaction)
+}
+
+// Transfer handles transferring funds between accounts
+func (h *Handler) Transfer(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FromAccountID int64   `json:"from_account_id"`
+		ToAccountID   int64   `json:"to_account_id"`
+		Amount        float64 `json:"amount"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	transactions, err := h.svc.Transfer(r.Context(), req.FromAccountID, req.ToAccountID, req.Amount)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(transactions)
+}

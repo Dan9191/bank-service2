@@ -168,3 +168,157 @@ func (s *Service) CreateCard(ctx context.Context, accountID int64) (*models.Card
 	s.log.Infof("Card created for account %d", accountID)
 	return card, nil
 }
+
+// Deposit adds funds to an account
+func (s *Service) Deposit(ctx context.Context, accountID int64, amount float64) (*models.Transaction, error) {
+	userIDStr, ok := ctx.Value("userID").(string)
+	if !ok || userIDStr == "" {
+		return nil, fmt.Errorf("user ID not found in context")
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Verify account belongs to user
+	accountUserID, err := s.repo.FindAccountByID(accountID)
+	if err != nil {
+		return nil, err
+	}
+	if accountUserID != userID {
+		return nil, fmt.Errorf("account does not belong to user")
+	}
+
+	// Validate amount
+	if amount <= 0 {
+		return nil, fmt.Errorf("deposit amount must be positive")
+	}
+
+	transaction := &models.Transaction{
+		AccountID:   accountID,
+		Amount:      amount,
+		Type:        "deposit",
+		Description: "Deposit to account",
+	}
+
+	if err := s.repo.Deposit(ctx, transaction); err != nil {
+		return nil, err
+	}
+
+	s.log.Infof("Deposit of %f to account %d", amount, accountID)
+	return transaction, nil
+}
+
+// Withdraw removes funds from an account
+func (s *Service) Withdraw(ctx context.Context, accountID int64, amount float64) (*models.Transaction, error) {
+	userIDStr, ok := ctx.Value("userID").(string)
+	if !ok || userIDStr == "" {
+		return nil, fmt.Errorf("user ID not found in context")
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Verify account belongs to user
+	accountUserID, err := s.repo.FindAccountByID(accountID)
+	if err != nil {
+		return nil, err
+	}
+	if accountUserID != userID {
+		return nil, fmt.Errorf("account does not belong to user")
+	}
+
+	// Validate amount
+	if amount <= 0 {
+		return nil, fmt.Errorf("withdrawal amount must be positive")
+	}
+
+	// Check balance
+	balance, err := s.repo.GetAccountBalance(accountID)
+	if err != nil {
+		return nil, err
+	}
+	if balance < amount {
+		return nil, fmt.Errorf("insufficient funds")
+	}
+
+	transaction := &models.Transaction{
+		AccountID:   accountID,
+		Amount:      -amount, // Negative for withdrawal
+		Type:        "withdrawal",
+		Description: "Withdrawal from account",
+	}
+
+	if err := s.repo.Withdraw(ctx, transaction); err != nil {
+		return nil, err
+	}
+
+	s.log.Infof("Withdrawal of %f from account %d", amount, accountID)
+	return transaction, nil
+}
+
+// Transfer moves funds between accounts
+func (s *Service) Transfer(ctx context.Context, fromAccountID, toAccountID int64, amount float64) ([]*models.Transaction, error) {
+	userIDStr, ok := ctx.Value("userID").(string)
+	if !ok || userIDStr == "" {
+		return nil, fmt.Errorf("user ID not found in context")
+	}
+
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Verify from_account belongs to user
+	fromAccountUserID, err := s.repo.FindAccountByID(fromAccountID)
+	if err != nil {
+		return nil, err
+	}
+	if fromAccountUserID != userID {
+		return nil, fmt.Errorf("from account does not belong to user")
+	}
+
+	// Verify to_account exists
+	_, err = s.repo.FindAccountByID(toAccountID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate amount
+	if amount <= 0 {
+		return nil, fmt.Errorf("transfer amount must be positive")
+	}
+
+	// Check balance
+	balance, err := s.repo.GetAccountBalance(fromAccountID)
+	if err != nil {
+		return nil, err
+	}
+	if balance < amount {
+		return nil, fmt.Errorf("insufficient funds")
+	}
+
+	// Create transactions
+	withdrawal := &models.Transaction{
+		AccountID:   fromAccountID,
+		Amount:      -amount,
+		Type:        "transfer_out",
+		Description: fmt.Sprintf("Transfer to account %d", toAccountID),
+	}
+	deposit := &models.Transaction{
+		AccountID:   toAccountID,
+		Amount:      amount,
+		Type:        "transfer_in",
+		Description: fmt.Sprintf("Transfer from account %d", fromAccountID),
+	}
+
+	if err := s.repo.Transfer(ctx, withdrawal, deposit); err != nil {
+		return nil, err
+	}
+
+	s.log.Infof("Transfer of %f from account %d to account %d", amount, fromAccountID, toAccountID)
+	return []*models.Transaction{withdrawal, deposit}, nil
+}
