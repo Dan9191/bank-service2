@@ -51,6 +51,24 @@ func (r *Repository) FindUserByEmail(email string) (*models.User, error) {
 	return user, nil
 }
 
+// FindUserByID retrieves a user by ID
+func (r *Repository) FindUserByID(userID int64) (*models.User, error) {
+	user := &models.User{}
+	query := `
+		SELECT id, username, email, password_hash, created_at, updated_at
+		FROM bank.users
+		WHERE id = $1`
+	err := r.db.QueryRow(query, userID).
+		Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.CreatedAt, &user.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("user not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to find user: %w", err)
+	}
+	return user, nil
+}
+
 // CreateAccount creates a new account in the database
 func (r *Repository) CreateAccount(account *models.Account) error {
 	query := `
@@ -474,6 +492,86 @@ func (r *Repository) GetPendingPayments() ([]*models.PaymentSchedule, error) {
 	return payments, nil
 }
 
+// GetUpcomingPayments retrieves unpaid payments up to a specific date
+func (r *Repository) GetUpcomingPayments(userID int64, endDate time.Time) ([]*models.PaymentSchedule, error) {
+	query := `
+		SELECT ps.id, ps.credit_id, ps.payment_date, ps.amount, ps.paid, ps.penalty, ps.created_at, ps.updated_at
+		FROM bank.payment_schedules ps
+		JOIN bank.credits c ON ps.credit_id = c.id
+		WHERE c.user_id = $1
+		AND ps.paid = FALSE
+		AND ps.payment_date <= $2
+		ORDER BY ps.payment_date ASC`
+	rows, err := r.db.Query(query, userID, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get upcoming payments: %w", err)
+	}
+	defer rows.Close()
+
+	var payments []*models.PaymentSchedule
+	for rows.Next() {
+		payment := &models.PaymentSchedule{}
+		err := rows.Scan(
+			&payment.ID,
+			&payment.CreditID,
+			&payment.PaymentDate,
+			&payment.Amount,
+			&payment.Paid,
+			&payment.Penalty,
+			&payment.CreatedAt,
+			&payment.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan payment schedule: %w", err)
+		}
+		payments = append(payments, payment)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating payment schedules: %w", err)
+	}
+	return payments, nil
+}
+
+// GetUpcomingPaymentsByDate retrieves unpaid payments up to a specific date
+func (r *Repository) GetUpcomingPaymentsByDate(endDate time.Time) ([]*models.PaymentSchedule, error) {
+	query := `
+		SELECT id, credit_id, payment_date, amount, paid, penalty, created_at, updated_at
+		FROM bank.payment_schedules
+		WHERE paid = FALSE
+		AND payment_date <= $1
+		ORDER BY payment_date ASC`
+	rows, err := r.db.Query(query, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get upcoming payments: %w", err)
+	}
+	defer rows.Close()
+
+	var payments []*models.PaymentSchedule
+	for rows.Next() {
+		payment := &models.PaymentSchedule{}
+		err := rows.Scan(
+			&payment.ID,
+			&payment.CreditID,
+			&payment.PaymentDate,
+			&payment.Amount,
+			&payment.Paid,
+			&payment.Penalty,
+			&payment.CreatedAt,
+			&payment.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan payment schedule: %w", err)
+		}
+		payments = append(payments, payment)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating payment schedules: %w", err)
+	}
+	return payments, nil
+}
+
 // UpdatePaymentSchedule updates a payment schedule entry
 func (r *Repository) UpdatePaymentSchedule(payment *models.PaymentSchedule) error {
 	query := `
@@ -520,45 +618,4 @@ func (r *Repository) GetTotalBalance(userID int64) (float64, error) {
 		return 0, fmt.Errorf("failed to get total balance: %w", err)
 	}
 	return totalBalance, nil
-}
-
-// GetUpcomingPayments retrieves unpaid payments up to a specific date
-func (r *Repository) GetUpcomingPayments(userID int64, endDate time.Time) ([]*models.PaymentSchedule, error) {
-	query := `
-		SELECT ps.id, ps.credit_id, ps.payment_date, ps.amount, ps.paid, ps.penalty, ps.created_at, ps.updated_at
-		FROM bank.payment_schedules ps
-		JOIN bank.credits c ON ps.credit_id = c.id
-		WHERE c.user_id = $1
-		AND ps.paid = FALSE
-		AND ps.payment_date <= $2
-		ORDER BY ps.payment_date ASC`
-	rows, err := r.db.Query(query, userID, endDate)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get upcoming payments: %w", err)
-	}
-	defer rows.Close()
-
-	var payments []*models.PaymentSchedule
-	for rows.Next() {
-		payment := &models.PaymentSchedule{}
-		err := rows.Scan(
-			&payment.ID,
-			&payment.CreditID,
-			&payment.PaymentDate,
-			&payment.Amount,
-			&payment.Paid,
-			&payment.Penalty,
-			&payment.CreatedAt,
-			&payment.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan payment schedule: %w", err)
-		}
-		payments = append(payments, payment)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating payment schedules: %w", err)
-	}
-	return payments, nil
 }

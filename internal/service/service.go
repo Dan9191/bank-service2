@@ -13,6 +13,7 @@ import (
 	"github.com/Dan9191/bank-service/internal/models"
 	"github.com/Dan9191/bank-service/internal/repository"
 	"github.com/Dan9191/bank-service/internal/utils"
+	"github.com/Dan9191/bank-service/internal/utils/email"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
@@ -21,34 +22,40 @@ import (
 
 // Service handles business logic
 type Service struct {
-	repo      *repository.Repository
-	log       *logrus.Logger
-	config    *config.Config
-	cbrClient *cbr.CBRClient
-	cron      *cron.Cron
+	repo        *repository.Repository
+	log         *logrus.Logger
+	config      *config.Config
+	cbrClient   *cbr.CBRClient
+	cron        *cron.Cron
+	emailSender *email.Sender
 }
 
 // NewService initializes a new service
 func NewService(repo *repository.Repository, log *logrus.Logger, cfg *config.Config, cbrClient *cbr.CBRClient) *Service {
 	svc := &Service{
-		repo:      repo,
-		log:       log,
-		config:    cfg,
-		cbrClient: cbrClient,
-		cron:      cron.New(),
+		repo:        repo,
+		log:         log,
+		config:      cfg,
+		cbrClient:   cbrClient,
+		cron:        cron.New(),
+		emailSender: email.NewSender(cfg, log),
 	}
 	svc.startScheduler()
 	return svc
 }
 
-// startScheduler starts the cron job for processing payments
+// startScheduler starts the cron job for processing payments and reminders
 func (s *Service) startScheduler() {
-	_, err := s.cron.AddFunc("@every 24h", s.processPendingPayments)
+	_, err := s.cron.AddFunc("* * * * *", s.processPendingPayments)
 	if err != nil {
 		s.log.Fatalf("Failed to start payment scheduler: %v", err)
 	}
+	_, err = s.cron.AddFunc("@every 24h", s.sendUpcomingPaymentReminders)
+	if err != nil {
+		s.log.Fatalf("Failed to start payment reminder scheduler: %v", err)
+	}
 	s.cron.Start()
-	s.log.Info("Payment scheduler started")
+	s.log.Info("Payment and reminder schedulers started")
 }
 
 // calculateAnnuityPayment calculates the monthly annuity payment
@@ -79,6 +86,15 @@ func (s *Service) generatePaymentSchedule(credit *models.Credit) ([]*models.Paym
 	return payments, nil
 }
 
+// getUserByID retrieves a user by ID
+func (s *Service) getUserByID(userID int64) (*models.User, error) {
+	user, err := s.repo.FindUserByID(userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find user: %w", err)
+	}
+	return user, nil
+}
+
 // processPendingPayments processes all pending payments
 func (s *Service) processPendingPayments() {
 	ctx := context.Background()
@@ -91,10 +107,17 @@ func (s *Service) processPendingPayments() {
 	for _, payment := range payments {
 		s.log.Debugf("Processing payment ID %d for credit %d, amount %.2f, due %s", payment.ID, payment.CreditID, payment.Amount, payment.PaymentDate.Format("2006-01-02"))
 
-		// Get credit to find account_id
+		// Get credit to find account_id and user_id
 		credit, err := s.repo.FindCreditByID(payment.CreditID)
 		if err != nil {
 			s.log.Errorf("Failed to find credit %d for payment %d: %v", payment.CreditID, payment.ID, err)
+			continue
+		}
+
+		// Get user for email
+		user, err := s.getUserByID(credit.UserID)
+		if err != nil {
+			s.log.Errorf("Failed to find user %d for payment %d: %v", credit.UserID, payment.ID, err)
 			continue
 		}
 
@@ -135,7 +158,65 @@ func (s *Service) processPendingPayments() {
 				continue
 			}
 			s.log.Warnf("Payment %d for credit %d overdue, penalty %.2f applied", payment.ID, payment.CreditID, penalty)
+
+			// Send overdue notification
+			if err := s.emailSender.SendPaymentReminder(
+				user.Email,
+				user.Username,
+				payment.PaymentDate,
+				payment.Amount,
+				payment.Penalty,
+				true,
+			); err != nil {
+				s.log.Errorf("Failed to send overdue notification for payment %d: %v", payment.ID, err)
+			}
 		}
+	}
+}
+
+// sendUpcomingPaymentReminders sends reminders for payments due in the next 3 days
+func (s *Service) sendUpcomingPaymentReminders() {
+	//ctx := context.Background()
+	endDate := time.Now().AddDate(0, 0, 3).Truncate(24 * time.Hour)
+	payments, err := s.repo.GetUpcomingPaymentsByDate(endDate)
+	if err != nil {
+		s.log.Errorf("Failed to get upcoming payments: %v", err)
+		return
+	}
+
+	for _, payment := range payments {
+		// Skip already paid or overdue payments
+		if payment.Paid || payment.PaymentDate.Before(time.Now().Truncate(24*time.Hour)) {
+			continue
+		}
+
+		// Get credit to find user_id
+		credit, err := s.repo.FindCreditByID(payment.CreditID)
+		if err != nil {
+			s.log.Errorf("Failed to find credit %d for payment %d: %v", payment.CreditID, payment.ID, err)
+			continue
+		}
+
+		// Get user for email
+		user, err := s.getUserByID(credit.UserID)
+		if err != nil {
+			s.log.Errorf("Failed to find user %d for payment %d: %v", credit.UserID, payment.ID, err)
+			continue
+		}
+
+		// Send reminder
+		if err := s.emailSender.SendPaymentReminder(
+			user.Email,
+			user.Username,
+			payment.PaymentDate,
+			payment.Amount,
+			payment.Penalty,
+			false,
+		); err != nil {
+			s.log.Errorf("Failed to send reminder for payment %d: %v", payment.ID, err)
+			continue
+		}
+		s.log.Infof("Sent payment reminder for payment %d due %s", payment.ID, payment.PaymentDate.Format("2006-01-02"))
 	}
 }
 
@@ -567,6 +648,32 @@ func (s *Service) Deposit(ctx context.Context, accountID int64, amount float64) 
 		return nil, err
 	}
 
+	// Get updated balance
+	balance, err := s.repo.GetAccountBalance(accountID)
+	if err != nil {
+		s.log.Errorf("Failed to get balance for account %d after deposit: %v", accountID, err)
+		return transaction, nil // Continue without sending email if balance fetch fails
+	}
+
+	// Get user for email
+	user, err := s.getUserByID(userID)
+	if err != nil {
+		s.log.Errorf("Failed to find user %d for deposit notification: %v", userID, err)
+		return transaction, nil // Continue without sending email if user fetch fails
+	}
+
+	// Send deposit notification
+	if err := s.emailSender.SendTransactionNotification(
+		user.Email,
+		user.Username,
+		accountID,
+		amount,
+		"Deposit",
+		balance,
+	); err != nil {
+		s.log.Errorf("Failed to send deposit notification for account %d: %v", accountID, err)
+	}
+
 	s.log.Infof("Deposit of %f to account %d", amount, accountID)
 	return transaction, nil
 }
@@ -615,6 +722,32 @@ func (s *Service) Withdraw(ctx context.Context, accountID int64, amount float64)
 
 	if err := s.repo.Withdraw(ctx, transaction); err != nil {
 		return nil, err
+	}
+
+	// Get updated balance
+	balance, err = s.repo.GetAccountBalance(accountID)
+	if err != nil {
+		s.log.Errorf("Failed to get balance for account %d after withdrawal: %v", accountID, err)
+		return transaction, nil // Continue without sending email if balance fetch fails
+	}
+
+	// Get user for email
+	user, err := s.getUserByID(userID)
+	if err != nil {
+		s.log.Errorf("Failed to find user %d for withdrawal notification: %v", userID, err)
+		return transaction, nil // Continue without sending email if user fetch fails
+	}
+
+	// Send withdrawal notification
+	if err := s.emailSender.SendTransactionNotification(
+		user.Email,
+		user.Username,
+		accountID,
+		amount,
+		"Withdrawal",
+		balance,
+	); err != nil {
+		s.log.Errorf("Failed to send withdrawal notification for account %d: %v", accountID, err)
 	}
 
 	s.log.Infof("Withdrawal of %f from account %d", amount, accountID)

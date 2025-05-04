@@ -14,6 +14,11 @@ type Config struct {
 	CBRURL        string
 	HMACSecret    string
 	EncryptionKey string
+	SMTPHost      string
+	SMTPPort      string
+	SMTPUsername  string
+	SMTPPassword  string
+	SenderEmail   string
 }
 
 // NewConfig loads configuration from environment variables
@@ -26,6 +31,11 @@ func NewConfig() (*Config, error) {
 		CBRURL:        getEnv("CBR_URL", "https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx"),
 		HMACSecret:    getEnv("HMAC_SECRET", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"),
 		EncryptionKey: getEnv("ENCRYPTION_KEY", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"),
+		SMTPHost:      getEnv("SMTP_HOST", "smtp.gmail.com"),
+		SMTPPort:      getEnv("SMTP_PORT", "587"),
+		SMTPUsername:  getEnv("SMTP_USERNAME", "-"),
+		SMTPPassword:  getEnv("SMTP_PASSWORD", "-"),
+		SenderEmail:   getEnv("SENDER_EMAIL", "-"),
 	}
 
 	if cfg.DBConn == "" {
@@ -39,6 +49,9 @@ func NewConfig() (*Config, error) {
 	}
 	if cfg.EncryptionKey == "" {
 		return nil, fmt.Errorf("ENCRYPTION_KEY is required")
+	}
+	if cfg.SMTPUsername == "" || cfg.SMTPPassword == "" {
+		return nil, fmt.Errorf("SMTP_USERNAME and SMTP_PASSWORD must be set")
 	}
 
 	return cfg, nil
